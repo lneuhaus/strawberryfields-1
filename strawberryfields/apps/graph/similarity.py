@@ -15,9 +15,9 @@ r"""
 Graph similarity
 ================
 
-**Module name:** :mod:`strawberryfields.apps.graph.similarity`
+**Module name:** :mod:`strawberryfields.gbs.similarity`
 
-.. currentmodule:: strawberryfields.apps.graph.similarity
+.. currentmodule:: strawberryfields.gbs.similarity
 
 Functionality for calculating feature vectors of graphs using GBS.
 
@@ -27,29 +27,31 @@ Summary
 .. autosummary::
     sample_to_orbit
     sample_to_event
+    orbit_to_sample
+    event_to_sample
     orbits
 
 Code details
 ^^^^^^^^^^^^
 """
-from typing import Generator
-from random import choice, shuffle
+from math import factorial
+from typing import Generator, Union
+
 import networkx as nx
+import numpy as np
+import scipy.linalg as la
+from scipy.special import binom
 from thewalrus import hafnian
 from thewalrus.quantum import find_scaling_adjacency_matrix
-from math import factorial
-from scipy.special import binom
-import scipy.linalg as la
-import numpy as np
 
 
 def sample_to_orbit(sample: list) -> list:
     """Provides the orbit corresponding to a given sample.
 
-    Orbits are simply a sorting of samples in non-increasing order with the zeros at the end
-    removed.
+    Orbits are simply a sorting of integer photon number samples in non-increasing order with the
+    zeros at the end removed.
 
-    Example usage:
+    **Example usage:**
 
     >>> sample = [1, 2, 0, 0, 1, 1, 0, 3]
     >>> sample_to_orbit(sample)
@@ -61,14 +63,19 @@ def sample_to_orbit(sample: list) -> list:
     Returns:
         list[int]: the orbit of the sample
     """
-    sorted_sample = sorted(sample, reverse=True)
-    return [c for c in sorted_sample if c != 0]
+    return sorted(filter(None, sample), reverse=True)
 
 
-def sample_to_event(sample: list, max_count_per_mode: int) -> list:
-    """Provides the event corresponding to a given sample.
+def sample_to_event(sample: list, max_count_per_mode: int) -> Union[int, None]:
+    r"""Provides the event corresponding to a given sample.
 
-    Example usage:
+    An event is a combination of orbits. For a fixed photon number, orbits are combined into an
+    event if the photon count in any mode does not exceed ``max_count_per_mode``, i.e.,
+    an orbit :math:`o=\{o_{1},o_{2},\ldots\}` with a total photon number :math:`\sum_{i}o_{i}=k`
+    is included in the event :math:`E_{k}` if :math:`\max_{i} \{o_{i}\}` is not larger than
+    ``max_count_per_mode``.
+
+    **Example usage:**
 
     >>> sample = [1, 2, 0, 0, 1, 1, 0, 3]
     >>> sample_to_event(sample, 4)
@@ -99,7 +106,7 @@ def orbits(photon_number: int) -> Generator[list, None, None]:
     Code derived from `website <http://jeromekelleher.net/generating-integer-partitions.html>`__
     of Jerome Kelleher's, which is based upon an algorithm from Ref. :cite:`kelleher2009generating`.
 
-    Example usage:
+    **Example usage:**
 
     >>> o = orbits(5)
     >>> list(o)
@@ -111,7 +118,7 @@ def orbits(photon_number: int) -> Generator[list, None, None]:
     Returns:
         Generator[list[int]]: orbits with total photon number adding up to ``photon_number``
     """
-    a = [0 for _ in range(photon_number + 1)]
+    a = [0] * (photon_number + 1)
     k = 1
     y = photon_number - 1
     while k != 0:
@@ -133,15 +140,16 @@ def orbits(photon_number: int) -> Generator[list, None, None]:
         yield sorted(a[: k + 1], reverse=True)
 
 
-def uniform_sample_orbit(orbit: list, modes: int) -> list:
-    """
-    Generates a sample selected uniformly at random from the the specified orbit.
+def orbit_to_sample(orbit: list, modes: int) -> list:
+    """Generates a sample selected uniformly at random from the specified orbit.
 
-    For a specific orbit and a number of modes, this functions produces a sample from that orbit,
-    selected uniformly at random from all possibilities.
+    An orbit has a number of constituting samples, which are given by taking all permutations
+    over the orbit. For a given orbit and number of modes, this function produces a sample
+    selected uniformly at random among all samples in the orbit.
 
     **Example usage**:
-    >>> uniform_sample_orbit([2, 1, 1], 6)
+
+    >>> orbit_to_sample([2, 1, 1], 6)
     [0, 1, 2, 0, 1, 0]
 
     Args:
@@ -150,28 +158,26 @@ def uniform_sample_orbit(orbit: list, modes: int) -> list:
 
     Returns:
         list[int]: a sample in the orbit
-
     """
     if modes < len(orbit):
         raise ValueError("Number of modes cannot be smaller than length of orbit")
 
     sample = orbit + [0] * (modes - len(orbit))
-    shuffle(sample)
+    np.random.shuffle(sample)
     return sample
 
 
-def uniform_sample_event(
-    photon_number: int, max_count_per_mode: int, modes: int
-) -> list:
-    """
-    Generates a sample selected uniformly at random from the the specified event.
+def event_to_sample(photon_number: int, max_count_per_mode: int, modes: int) -> list:
+    """Generates a sample selected uniformly at random from the specified event.
 
-    Given an event specified by a photon number and a maximum number of photons per mode,
-    this function produces a sample from that event, selected uniformly at random from all
-    possibilities.
+    An event has a number of constituting samples, which are given by combining samples within all
+    orbits with a fixed photon number whose photon count in any mode does not exceed
+    ``max_count_per_mode``. This function produces a sample selected uniformly at random among
+    all samples in the event.
 
     **Example usage**:
-    >>> uniform_sample_event(4, 2, 6)
+
+    >>> event_to_sample(4, 2, 6)
     [0, 1, 0, 0, 2, 1]
 
     Args:
@@ -180,28 +186,25 @@ def uniform_sample_event(
         modes (int): number of modes in the sample
 
     Returns:
-        list[int]: a sample in the orbit
-
+        list[int]: a sample in the event
     """
     if max_count_per_mode < 1:
-        raise ValueError(
-            "Maximum number of photons per mode must be equal or greater than 1"
-        )
+        raise ValueError("Maximum number of photons per mode must be equal or greater than 1")
 
     if max_count_per_mode * modes < photon_number:
         raise ValueError(
-            """No valid samples can be generated. 
-        Consider increasing the max_count_per_mode or reducing the number of photons."""
+            "No valid samples can be generated. Consider increasing the "
+            "max_count_per_mode or reducing the number of photons."
         )
 
     sample = [0] * modes
-    list_modes = list(range(modes))
+    available_modes = list(range(modes))
 
     for _ in range(photon_number):
-        j = choice(list_modes)
+        j = np.random.choice(available_modes)
         sample[j] += 1
         if sample[j] == max_count_per_mode:
-            list_modes.remove(j)
+            available_modes.remove(j)
 
     return sample
 
@@ -222,7 +225,7 @@ def fac_prod(orbit: list) -> int:
 
     prod = 1
     for i in orbit:
-        prod = prod*factorial(i)
+        prod = prod * factorial(i)
 
     return prod
 
@@ -249,7 +252,7 @@ def compress_sample(sample: list) -> list:
 
     comp_sample = []
     for i in range(len(sample)):
-        comp_sample = comp_sample + [i]*sample[i]
+        comp_sample = comp_sample + [i] * sample[i]
 
     return comp_sample
 
@@ -284,11 +287,11 @@ def estimate_orbit_prob(graph: nx.Graph, orbit: list, n_mean: float, samples: in
     prob = 0
 
     for i in range(samples):
-        sample = compress_sample(uniform_sample_orbit(orbit, modes))
+        sample = compress_sample(orbit_to_sample(orbit, modes))
         A_sample = A[sample][:, sample]
-        prob += np.abs(hafnian(A_sample))**2
+        prob += np.abs(hafnian(A_sample)) ** 2
 
-    prob = (prob*cardinality)/(fac_norm*alpha*samples)
+    prob = (prob * cardinality) / (fac_norm * alpha * samples)
 
     return prob
 
@@ -314,8 +317,9 @@ def event_cardinality(photon_number: int, max_count_per_mode: int, modes: int) -
     return cardinality
 
 
-def estimate_event_prob(graph: nx.Graph, photon_number: int, max_count_per_mode: int,
-                        n_mean: float, samples: int = 1000) -> float:
+def estimate_event_prob(
+    graph: nx.Graph, photon_number: int, max_count_per_mode: int, n_mean: float, samples: int = 1000
+) -> float:
     """Gives a Monte Carlo estimation of the probability that a sample belongs to the given
     event.
 
@@ -346,13 +350,12 @@ def estimate_event_prob(graph: nx.Graph, photon_number: int, max_count_per_mode:
     prob = 0
 
     for i in range(samples):
-        long_sample = uniform_sample_event(photon_number, max_count_per_mode, modes)
+        long_sample = event_to_sample(photon_number, max_count_per_mode, modes)
         orbit = sample_to_orbit(long_sample)
         sample = compress_sample(long_sample)
         A_sample = A[sample][:, sample]
-        prob += np.abs(hafnian(A_sample))**2/fac_prod(orbit)
+        prob += np.abs(hafnian(A_sample)) ** 2 / fac_prod(orbit)
 
-    prob = (prob*cardinality)/(alpha*samples)
+    prob = (prob * cardinality) / (alpha * samples)
 
     return prob
-
